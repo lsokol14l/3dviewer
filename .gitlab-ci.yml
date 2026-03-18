@@ -1,0 +1,94 @@
+stages:
+  - prepare
+  - build
+  - style
+  - test
+  - coverage
+
+variables:
+  MODELS_CACHE_KEY: "obj-models-v1"
+  MODELS_URL: "https://raw.githubusercontent.com/zenorachi/3D-Viewer-V2.0/main/obj"
+  MODELS_DIR: "obj"
+
+# Кэшируем модели между пайплайнами
+cache:
+  key: ${MODELS_CACHE_KEY}
+  paths:
+    - ${MODELS_DIR}/
+
+# Этап подготовки: скачивание моделей (выполняется один раз, потом берется из кэша)
+prepare_models:
+  stage: prepare
+  script:
+    - echo "Проверка наличия моделей в кэше..."
+    - |
+      if [ ! -d "${MODELS_DIR}" ] || [ -z "$(ls -A ${MODELS_DIR})" ]; then
+        echo "Кэш пуст, скачиваем модели..."
+        mkdir -p ${MODELS_DIR}
+        
+        # Список моделей из репозитория zenorachi
+        MODELS="beef.obj cat.obj cube.obj dragon.obj monkey2.obj school21.obj teapot.obj teddy.obj test.obj"
+        
+        for model in $MODELS; do
+          echo "Скачиваем ${model}..."
+          curl -f -o "${MODELS_DIR}/${model}" "${MODELS_URL}/${model}" || echo "Не удалось скачать ${model}"
+        done
+        
+        echo "Модели скачаны и сохранены в кэш"
+      else
+        echo "Модели найдены в кэше, пропускаем скачивание"
+        ls -lh ${MODELS_DIR}
+      fi
+  tags:
+    - prepare
+  artifacts:
+    paths:
+      - ${MODELS_DIR}/
+    expire_in: 30 days
+
+build:
+  stage: build
+  dependencies:
+    - prepare_models
+  script:
+    - echo "Сборка проекта..."
+    - cd src
+    - mkdir -p build && cd build
+    - cmake ..
+    - make -j$(nproc)
+  artifacts:
+    paths:
+      - src/build/
+    expire_in: 1 hour
+  tags:
+    - build
+
+style:
+  stage: style
+  script:
+    - clang-format --style=Google --dry-run --Werror $(find src/ -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \))
+  allow_failure: true
+  tags:
+    - style
+
+test:
+  stage: test
+  dependencies:
+    - build
+    - prepare_models
+  script:
+    - echo "Подготовка моделей для тестов..."
+    - ls -la
+    - echo "Копируем модели в src/ для тестов (они ищут ../obj/ относительно src/build/)..."
+    - mkdir -p src/obj
+    - cp -r obj/* src/obj/ 2>/dev/null || echo "Модели уже скопированы"
+    - ls -la src/obj/
+    - cd src/build
+    - echo "Запуск unit-тестов..."
+    - ctest --output-on-failure --verbose
+  artifacts:
+    when: always
+    paths:
+      - src/build/Testing/
+  tags:
+    - test
